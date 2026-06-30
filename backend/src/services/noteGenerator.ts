@@ -105,7 +105,7 @@ ${transcript}`
 
   const response = await openrouter.chat.completions.create({
     model: 'openai/gpt-4o',
-    max_tokens: 2048,
+    max_tokens: 1024,
     temperature: 0,
     messages: [
       {

@@ -1,5 +1,7 @@
 import 'dotenv/config'
 
+import { SOAPNote } from '../models/SOAPNote'
+
 import express, {
   type NextFunction,
   type Request,
@@ -16,7 +18,7 @@ import { soapRouter } from './routes/soap'
 const app = express()
 const PORT = Number(process.env.PORT) || 4000
 
-app.use(
+app.use(  
   cors({
     origin: 'http://localhost:5173',
     credentials: true
@@ -149,4 +151,36 @@ process.on('SIGINT', () => {
 start().catch((error) => {
   console.error('[server] failed to start', error)
   process.exit(1)
+})
+
+
+
+app.post('/api/intake/:sessionId/soap', async (req, res) => {
+  const { sessionId } = req.params
+  const { summary } = req.body
+
+  try {
+    const transcript = `
+Doctor: So you have ${summary.chiefComplaint}.
+Patient: ${summary.hpi}
+Doctor: Medications?
+Patient: ${summary.medications.map(m => `${m.name} ${m.dose}`).join(', ') || 'None'}
+    `.trim()
+
+    const result = await generateSOAPNote(transcript, summary)
+
+    // Save to DB
+    await SOAPNote.create({
+      sessionId,
+      note: result.note
+    })
+
+    res.json({
+      ok: true,
+      data: { note: result.note }
+    })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ ok: false, error: 'SOAP generation failed' })
+  }
 })
