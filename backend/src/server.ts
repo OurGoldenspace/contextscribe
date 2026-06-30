@@ -1,7 +1,5 @@
 import 'dotenv/config'
 
-import { SOAPNote } from '../models/SOAPNote'
-
 import express, {
   type NextFunction,
   type Request,
@@ -155,32 +153,3 @@ start().catch((error) => {
 
 
 
-app.post('/api/intake/:sessionId/soap', async (req, res) => {
-  const { sessionId } = req.params
-  const { summary } = req.body
-
-  try {
-    const transcript = `
-Doctor: So you have ${summary.chiefComplaint}.
-Patient: ${summary.hpi}
-Doctor: Medications?
-Patient: ${summary.medications.map(m => `${m.name} ${m.dose}`).join(', ') || 'None'}
-    `.trim()
-
-    const result = await generateSOAPNote(transcript, summary)
-
-    // Save to DB
-    await SOAPNote.create({
-      sessionId,
-      note: result.note
-    })
-
-    res.json({
-      ok: true,
-      data: { note: result.note }
-    })
-  } catch (err) {
-    console.error(err)
-    res.status(500).json({ ok: false, error: 'SOAP generation failed' })
-  }
-})

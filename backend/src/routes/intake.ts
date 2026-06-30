@@ -309,21 +309,40 @@ intakeRouter.get(
         return
       }
 
-      const state: IntakeSessionState = {
-        status: session.status,
-        sessionId,
-        messages: serializeMessages(session.messages)
-      }
+      const messages = serializeMessages(session.messages)
 
-      if (
-        session.status === 'complete' &&
-        session.structuredData
-      ) {
-        state.summary = validateClinicalSummary(
-          session.structuredData.toObject
-            ? session.structuredData.toObject()
-            : session.structuredData
+      let state: IntakeSessionState
+
+      if (session.status === 'complete') {
+        if (!session.structuredData) {
+          throw new Error(
+            'Completed intake session has no structured summary'
+          )
+        }
+
+        const summary = validateClinicalSummary(
+          session.structuredData
         )
+
+        state = {
+          status: 'complete',
+          sessionId,
+          messages,
+          summary
+        }
+      } else if (session.status === 'error') {
+        state = {
+          status: 'error',
+          sessionId,
+          code: 'SESSION_ERROR',
+          retryable: true
+        }
+      } else {
+        state = {
+          status: 'active',
+          sessionId,
+          messages
+        }
       }
 
       const response: ApiResponse<IntakeSessionState> = {
@@ -352,3 +371,5 @@ intakeRouter.get(
     }
   }
 )
+    
+  
