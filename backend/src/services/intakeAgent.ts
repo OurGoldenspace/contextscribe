@@ -33,13 +33,6 @@ CONSTRAINTS:
   the patient, do not include it as confirmed — note it as uncertain.
 - If the patient's response is ambiguous, ask a clarifying question rather
   than guessing.
-- If the patient discloses something suggesting an emergency (e.g. severe
-  chest pain with radiation, difficulty breathing, signs of stroke,
-  suicidal ideation), you MUST call the flag_safety_concern tool
-  immediately with severity "URGENT", and you should gently advise the
-  patient that this may need urgent attention before their scheduled visit.
-  Continue the intake after flagging unless the concern makes continuing
-  inappropriate.
 - Aim to complete intake in 8-14 exchanges. Do not pad the conversation.
 - Ask only one question at a time.
 - Adapt follow-ups based on what the patient said.
@@ -169,7 +162,7 @@ export async function runIntakeTurn(history: Message[]): Promise<AgentTurnResult
   }))
 
   let response = await openrouter.chat.completions.create({
-    model: 'openai/gpt-4o-mini',
+    model: 'openai/gpt-4o',
     max_tokens: 1024,
     temperature: 0,
     tools,
@@ -227,7 +220,7 @@ export async function runIntakeTurn(history: Message[]): Promise<AgentTurnResult
     }
   
     response = await openrouter.chat.completions.create({
-      model: 'openai/gpt-4o-mini',
+      model: 'openai/gpt-4o',
       max_tokens: 1024,
       temperature: 0,
       tools,
