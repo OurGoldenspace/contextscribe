@@ -66,6 +66,10 @@ app.use('/api/intake', soapRouter)
 
 app.use('/api/note', noteRouter)
 
+app.listen(PORT, () => {
+  console.log(`[server] listening on port ${PORT}`)
+})
+
 // Handle routes that do not exist.
 app.use((_req: Request, res: Response) => {
   res.status(404).json({
