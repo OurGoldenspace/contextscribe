@@ -19,12 +19,20 @@ const PORT = Number(process.env.PORT) || 4000
 const allowedOrigins = [
   'http://localhost:5173',
   'https://contextscribe.vercel.app',
+  'https://contextscribe-*.vercel.app',  // Match any vercel preview
   process.env.FRONTEND_URL
 ].filter((origin): origin is string => Boolean(origin))
 
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      // Allow all Vercel subdomains
+      if (!origin || origin.includes('vercel.app') || allowedOrigins.includes(origin)) {
+        callback(null, true)
+      } else {
+        callback(new Error('Not allowed by CORS'))
+      }
+    },
     credentials: true
   })
 )
@@ -65,10 +73,6 @@ app.use('/api/intake', intakeRouter)
 app.use('/api/intake', soapRouter)
 
 app.use('/api/note', noteRouter)
-
-app.listen(PORT, () => {
-  console.log(`[server] listening on port ${PORT}`)
-})
 
 // Handle routes that do not exist.
 app.use((_req: Request, res: Response) => {
