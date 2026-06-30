@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
-import IntakeChat from './pages/IntakeChat'
+import IntakeChat from './components/IntakeChat'
 import SOAPNoteView from './pages/SOAPNoteView'
 import './App.css'
 

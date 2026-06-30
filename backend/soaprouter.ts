@@ -1,8 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { z } from 'zod'
-import { generateSOAPNote } from '../services/noteGenerator'
-import type { ApiResponse } from '../types'
+import { generateSOAPNote } from 'src/services/noteGenerator'
+import type { ApiResponse } from 'src/types'
 
 export const soapRouter = Router()
 

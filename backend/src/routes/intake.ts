@@ -1,206 +1,354 @@
-import { Router, Request, Response } from 'express'
+import { Router, type Request, type Response } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { z } from 'zod'
+
 import { IntakeSession } from '../models/IntakeSession'
 import { runIntakeTurn } from '../services/intakeAgent'
-import { validateClinicalSummary, LLMOutputError } from '../services/validation'
-import type { ApiResponse, IntakeSessionState, Message } from '../types'
+import {
+  validateClinicalSummary,
+  LLMOutputError
+} from '../services/validation'
+import type {
+  ApiResponse,
+  IntakeSessionState,
+  Message
+} from '../types'
 
 export const intakeRouter = Router()
 
-// ─────────────────────────────────────────────────────────────────────────
-// POST /api/intake/start — creates a new session and asks the first
-// question.
-// ─────────────────────────────────────────────────────────────────────────
-intakeRouter.post('/start', async (req: Request, res: Response) => {
-  const sessionId = uuidv4()
-
-  try {
-    const result = await runIntakeTurn([])
-
-    await IntakeSession.create({
-      sessionId,
-      messages: [{ role: 'assistant', content: result.assistantMessage, timestamp: new Date() }],
-      status: 'active'
-    })
-
-    const response: ApiResponse<IntakeSessionState> = {
-      ok: true,
-      data: {
-        status: 'active',
-        sessionId,
-        messages: [{ role: 'assistant', content: result.assistantMessage, timestamp: new Date().toISOString() }]
-      },
-      requestId: uuidv4()
-    }
-    res.json(response)
-  } catch (err) {
-    console.error('[intake/start] failed', err)
-    const response: ApiResponse<never> = {
-      ok: false,
-      error: 'Failed to start intake session',
-      code: 'INTAKE_START_FAILED',
-      retryable: true
-    }
-    res.status(500).json(response)
-  }
-})
-
-// ─────────────────────────────────────────────────────────────────────────
-// POST /api/intake/:sessionId/message — sends a patient message, gets the
-// next question (or, if intake is complete, the structured summary).
-// ─────────────────────────────────────────────────────────────────────────
 const SendMessageSchema = z.object({
-  message: z.string().min(1).max(2000).trim()
+  message: z.string().trim().min(1).max(2000)
 })
 
-intakeRouter.post('/:sessionId/message', async (req: Request, res: Response) => {
-  const sessionId = req.params.sessionId
-  if (typeof sessionId !== 'string') {
-    const response: ApiResponse<never> = {
-      ok: false,
-      error: 'Invalid session ID',
-      code: 'VALIDATION_FAILED',
-      retryable: false
+function serializeMessages(
+  messages: Array<{
+    role: 'patient' | 'assistant'
+    content: string
+    timestamp: Date
+  }>
+): Message[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp.toISOString()
+  }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/intake/start
+// Creates a new intake session and asks the first question.
+// ─────────────────────────────────────────────────────────────────────────────
+
+intakeRouter.post(
+  '/start',
+  async (_req: Request, res: Response): Promise<void> => {
+    const sessionId = uuidv4()
+    const requestId = uuidv4()
+
+    try {
+      const result = await runIntakeTurn([])
+      const now = new Date()
+
+      const session = await IntakeSession.create({
+        sessionId,
+        messages: [
+          {
+            role: 'assistant',
+            content: result.assistantMessage,
+            timestamp: now
+          }
+        ],
+        status: 'active'
+      })
+
+      const response: ApiResponse<IntakeSessionState> = {
+        ok: true,
+        data: {
+          status: 'active',
+          sessionId,
+          messages: serializeMessages(session.messages)
+        },
+        requestId
+      }
+
+      res.status(201).json(response)
+    } catch (error) {
+      console.error('[intake/start] failed', {
+        requestId,
+        error
+      })
+
+      const response: ApiResponse<never> = {
+        ok: false,
+        error: 'Failed to start intake session',
+        code: 'INTAKE_START_FAILED',
+        retryable: true,
+        requestId
+      }
+
+      res.status(500).json(response)
     }
-    return res.status(400).json(response)
   }
+)
 
-  const parsed = SendMessageSchema.safeParse(req.body)
-  if (!parsed.success) {
-    const response: ApiResponse<never> = {
-      ok: false,
-      error: 'Invalid request body',
-      code: 'VALIDATION_FAILED',
-      retryable: false
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/intake/:sessionId/message
+// Adds one patient message and returns either:
+// - the next intake question, or
+// - the completed structured clinical summary.
+// ─────────────────────────────────────────────────────────────────────────────
+
+intakeRouter.post(
+  '/:sessionId/message',
+  async (req: Request, res: Response): Promise<void> => {
+    const requestId = uuidv4()
+    const sessionId = req.params.sessionId
+
+    if (
+      typeof sessionId !== 'string' ||
+      sessionId.trim().length === 0
+    ) {
+      const response: ApiResponse<never> = {
+        ok: false,
+        error: 'Invalid session ID',
+        code: 'VALIDATION_FAILED',
+        retryable: false,
+        requestId
+      }
+
+      res.status(400).json(response)
+      return
     }
-    return res.status(400).json(response)
-  }
 
-  const session = await IntakeSession.findOne({ sessionId })
-  if (!session) {
-    const response: ApiResponse<never> = {
-      ok: false,
-      error: 'Session not found',
-      code: 'SESSION_NOT_FOUND',
-      retryable: false
+    const parsed = SendMessageSchema.safeParse(req.body)
+
+    if (!parsed.success) {
+      const response: ApiResponse<never> = {
+        ok: false,
+        error: 'Message must contain between 1 and 2000 characters',
+        code: 'VALIDATION_FAILED',
+        retryable: false,
+        requestId
+      }
+
+      res.status(400).json(response)
+      return
     }
-    return res.status(404).json(response)
-  }
 
-  if (session.status !== 'active') {
-    const response: ApiResponse<never> = {
-      ok: false,
-      error: 'Session is not active',
-      code: 'SESSION_NOT_ACTIVE',
-      retryable: false
-    }
-    return res.status(409).json(response)
-  }
+    try {
+      const session = await IntakeSession.findOne({ sessionId })
 
-  try {
-    session.messages.push({
-      role: 'patient',
-      content: parsed.data.message,
-      timestamp: new Date()
-    })
+      if (!session) {
+        const response: ApiResponse<never> = {
+          ok: false,
+          error: 'Session not found',
+          code: 'SESSION_NOT_FOUND',
+          retryable: false,
+          requestId
+        }
 
-    const history: Message[] = session.messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-      timestamp: m.timestamp.toISOString()
-    }))
+        res.status(404).json(response)
+        return
+      }
 
-    const result = await runIntakeTurn(history)
+      // This prevents any more model calls after intake completion.
+      if (session.status === 'complete') {
+        const response: ApiResponse<never> = {
+          ok: false,
+          error: 'This intake session is already complete',
+          code: 'INTAKE_ALREADY_COMPLETE',
+          retryable: false,
+          requestId
+        }
 
-    if (result.isComplete && result.summary) {
-      const validatedSummary = validateClinicalSummary(result.summary)
+        res.status(409).json(response)
+        return
+      }
 
-      // Mongoose's typed subdocument for structuredData expects optional
-      // fields with possible undefined; the validated summary always has
-      // these as required strings, so we use set() explicitly rather than
-      // relying on structural assignment to avoid the strict-mode mismatch.
-      session.set('structuredData', validatedSummary)
-      session.status = 'complete'
+      if (session.status !== 'active') {
+        const response: ApiResponse<never> = {
+          ok: false,
+          error: 'Session is not active',
+          code: 'SESSION_NOT_ACTIVE',
+          retryable: false,
+          requestId
+        }
+
+        res.status(409).json(response)
+        return
+      }
+
+      session.messages.push({
+        role: 'patient',
+        content: parsed.data.message,
+        timestamp: new Date()
+      })
+
+      const history = serializeMessages(session.messages)
+
+      const result = await runIntakeTurn(history)
+
+      // Always save the assistant response, including the completion message.
+      session.messages.push({
+        role: 'assistant',
+        content: result.assistantMessage,
+        timestamp: new Date()
+      })
+
+      if (result.isComplete && result.summary) {
+        const validatedSummary = validateClinicalSummary(
+          result.summary
+        )
+
+        session.set('structuredData', validatedSummary)
+        session.status = 'complete'
+
+        await session.save()
+
+        const response: ApiResponse<IntakeSessionState> = {
+          ok: true,
+          data: {
+            status: 'complete',
+            sessionId,
+            messages: serializeMessages(session.messages),
+            summary: validatedSummary
+          },
+          requestId
+        }
+
+        res.status(200).json(response)
+        return
+      }
+
       await session.save()
 
       const response: ApiResponse<IntakeSessionState> = {
         ok: true,
         data: {
-          status: 'complete',
+          status: 'active',
           sessionId,
-          messages: history,
-          summary: validatedSummary
+          messages: serializeMessages(session.messages)
         },
-        requestId: uuidv4()
+        requestId
       }
-      return res.json(response)
-    }
 
-    session.messages.push({
-      role: 'assistant',
-      content: result.assistantMessage,
-      timestamp: new Date()
-    })
-    await session.save()
-
-    const response: ApiResponse<IntakeSessionState> = {
-      ok: true,
-      data: {
-        status: 'active',
+      res.status(200).json(response)
+    } catch (error) {
+      console.error('[intake/message] failed', {
         sessionId,
-        messages: session.messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-          timestamp: m.timestamp.toISOString()
-        }))
-      },
-      requestId: uuidv4()
-    }
-    res.json(response)
-  } catch (err) {
-    console.error('[intake/message] failed', err)
+        requestId,
+        error
+      })
 
-    if (err instanceof LLMOutputError) {
+      if (error instanceof LLMOutputError) {
+        const response: ApiResponse<never> = {
+          ok: false,
+          error: 'The model returned malformed output',
+          code: 'LLM_OUTPUT_INVALID',
+          retryable: true,
+          requestId
+        }
+
+        res.status(502).json(response)
+        return
+      }
+
       const response: ApiResponse<never> = {
         ok: false,
-        error: 'Model returned malformed output',
-        code: 'LLM_OUTPUT_INVALID',
-        retryable: true
+        error: 'Failed to process intake message',
+        code: 'INTAKE_MESSAGE_FAILED',
+        retryable: true,
+        requestId
       }
-      return res.status(502).json(response)
+
+      res.status(500).json(response)
+    }
+  }
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/intake/:sessionId
+// Returns the current state for refreshing or resuming the page.
+// ─────────────────────────────────────────────────────────────────────────────
+
+intakeRouter.get(
+  '/:sessionId',
+  async (req: Request, res: Response): Promise<void> => {
+    const requestId = uuidv4()
+    const sessionId = req.params.sessionId
+
+    if (
+      typeof sessionId !== 'string' ||
+      sessionId.trim().length === 0
+    ) {
+      const response: ApiResponse<never> = {
+        ok: false,
+        error: 'Invalid session ID',
+        code: 'VALIDATION_FAILED',
+        retryable: false,
+        requestId
+      }
+
+      res.status(400).json(response)
+      return
     }
 
-    const response: ApiResponse<never> = {
-      ok: false,
-      error: 'Failed to process message',
-      code: 'INTAKE_MESSAGE_FAILED',
-      retryable: true
-    }
-    res.status(500).json(response)
-  }
-})
+    try {
+      const session = await IntakeSession.findOne({ sessionId })
 
-// ─────────────────────────────────────────────────────────────────────────
-// GET /api/intake/:sessionId — fetch current session state (for resuming
-// or for the comparison view to pull a completed summary).
-// ─────────────────────────────────────────────────────────────────────────
-intakeRouter.get('/:sessionId', async (req: Request, res: Response) => {
-  const session = await IntakeSession.findOne({ sessionId: req.params.sessionId })
-  if (!session) {
-    const response: ApiResponse<never> = {
-      ok: false,
-      error: 'Session not found',
-      code: 'SESSION_NOT_FOUND',
-      retryable: false
-    }
-    return res.status(404).json(response)
-  }
+      if (!session) {
+        const response: ApiResponse<never> = {
+          ok: false,
+          error: 'Session not found',
+          code: 'SESSION_NOT_FOUND',
+          retryable: false,
+          requestId
+        }
 
-  const response: ApiResponse<typeof session> = {
-    ok: true,
-    data: session,
-    requestId: uuidv4()
+        res.status(404).json(response)
+        return
+      }
+
+      const state: IntakeSessionState = {
+        status: session.status,
+        sessionId,
+        messages: serializeMessages(session.messages)
+      }
+
+      if (
+        session.status === 'complete' &&
+        session.structuredData
+      ) {
+        state.summary = validateClinicalSummary(
+          session.structuredData.toObject
+            ? session.structuredData.toObject()
+            : session.structuredData
+        )
+      }
+
+      const response: ApiResponse<IntakeSessionState> = {
+        ok: true,
+        data: state,
+        requestId
+      }
+
+      res.status(200).json(response)
+    } catch (error) {
+      console.error('[intake/get] failed', {
+        sessionId,
+        requestId,
+        error
+      })
+
+      const response: ApiResponse<never> = {
+        ok: false,
+        error: 'Failed to retrieve intake session',
+        code: 'INTAKE_FETCH_FAILED',
+        retryable: true,
+        requestId
+      }
+
+      res.status(500).json(response)
+    }
   }
-  res.json(response)
-})
+)

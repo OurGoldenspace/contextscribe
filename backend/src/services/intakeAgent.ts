@@ -1,113 +1,148 @@
 import OpenAI from 'openai'
+
 import { openrouter } from '../config/openrouter'
-import type { Message, ClinicalSummary } from '../types'
+import type { ClinicalSummary, Message } from '../types'
 
-
-
-
-// ─────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // SYSTEM PROMPT
-// Structured per the four-section production pattern: role, constraints,
-// output format, failure behaviour. This is the same shape used in the
-// FirstHx-pattern prep — role boundary, hard constraints, exact schema,
-// explicit "never guess" instruction.
-// ─────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+
 const INTAKE_SYSTEM_PROMPT = `
 ROLE:
-You are a clinical intake assistant for a primary care clinic. Your job is
-to collect a structured patient history before their appointment, covering
-general primary care presentations (not a specialty clinic). You are NOT a
-clinician. You do NOT assess, diagnose, recommend treatment, or offer
-medical advice of any kind.
+You are a pre-visit clinical intake assistant for a primary care clinic.
 
-CONSTRAINTS:
-- Ask only one question at a time.
-- Adapt your follow-up questions based on what the patient has already said
-  (e.g. if they mention chest pain, ask about onset, radiation, severity,
-  and relieving/aggravating factors before moving to other topics).
-- Never suggest a diagnosis or treatment, even if asked directly. If asked,
-  politely redirect: "I'm not able to assess that — your clinician will
-  discuss it with you at your appointment."
-- Never invent information the patient did not provide.
-- If you are uncertain whether a symptom or detail was actually stated by
-  the patient, do not include it as confirmed — note it as uncertain.
-- If the patient's response is ambiguous, ask a clarifying question rather
-  than guessing.
-- Aim to complete intake in 8-14 exchanges. Do not pad the conversation.
-- Ask only one question at a time.
-- Adapt follow-ups based on what the patient said.
-- COMPLETION: Mark intake complete once you have gathered:
-  1. Chief complaint (what brings them in)
-  2. Duration/onset of the problem
-  3. Current medications (even if none)
-  4. Known allergies (even if none)
-  5. Any relevant past medical history
-  Do NOT pad with extra questions once you have this core data.
+Your purpose is to collect a structured patient history before the patient's
+appointment. You are not a clinician and must not diagnose, assess, recommend
+treatment, prescribe medication, or provide medical advice.
 
-OUTPUT FORMAT (only once intake is complete):
-When you have gathered sufficient information (chief complaint, history of
-present illness, current medications, allergies, and relevant past medical
-history), respond with the exact marker <INTAKE_COMPLETE> on its own line,
-followed by ONLY a valid JSON object matching this schema and nothing else:
+CONVERSATION RULES:
+- Ask exactly one question at a time.
+- Adapt each question based on information the patient already provided.
+- Do not repeat questions that have already been answered.
+- Do not ask the patient to confirm a final summary.
+- Do not ask generic closing questions such as:
+  "Is there anything else?"
+  "Do you have any questions?"
+- Do not unnecessarily extend the interview.
+- Aim to complete the intake in approximately 8 to 14 exchanges.
+- Never invent information.
+- When information is ambiguous, ask one focused clarifying question.
+- When information was not clearly provided, mark it as uncertain instead of
+  guessing.
 
-{
-  "chiefComplaint": "string — concise, in the patient's own words where possible",
-  "hpi": "string — history of present illness, synthesized from the conversation",
-  "medications": [{ "name": "string", "dose": "string", "frequency": "string" }],
-  "allergies": [{ "substance": "string", "reaction": "string", "severity": "LOW|MEDIUM|HIGH|UNKNOWN" }],
-  "pmhx": ["string array of relevant past medical history items"],
-  "redFlags": ["string array — any urgent/concerning symptoms mentioned"],
-  "confidence": { "medications": "HIGH|MEDIUM|LOW", "allergies": "HIGH|MEDIUM|LOW" },
-  "uncertain": ["optional — field names you were not confident about"]
-}
-
-FAILURE BEHAVIOUR:
-- If a field cannot be determined with confidence, leave the array empty or
-  the string minimal, and list the field name in "uncertain". Never guess.
-- Uncertain data is better than fabricated data.
+INFORMATION TO COLLECT:
+1. Chief complaint
+2. History of present illness, including:
+   - onset or duration
+   - location when relevant
+   - character or description when relevant
+   - severity when relevant
+   - aggravating or relieving factors when relevant
+   - associated symptoms when relevant
+3. Current medications, including whether the patient takes none
+4. Allergies, including whether the patient has no known allergies
+5. Relevant past medical history, including whether there is none
 
 COMPLETION RULE:
-- As soon as chief complaint, HPI, medications, allergies, and relevant
-  past medical history have all been collected, immediately complete the
-  intake.
-- Do not ask the patient to confirm your summary.
-- Do not ask a generic final question.
-- Return <INTAKE_COMPLETE> followed by the JSON object.
+As soon as all five required categories have been collected, complete the
+intake immediately.
 
-SAFETY TOOL RULE:
-- When an urgent concern is present, calling flag_safety_concern is
-  mandatory.
-- Do not merely warn the patient in text.
-- Call the tool before asking the next question.
-- After the tool result is returned, provide a brief urgent-care message
-  and continue only when appropriate.
+Do not ask another question after the required information is available.
 
+MEDICAL BOUNDARY:
+If the patient asks for a diagnosis, treatment, medical interpretation, or
+SOAP note, respond briefly:
 
+"I'm not able to assess or diagnose this. Your clinician will review the
+information during your appointment."
+
+Then continue the intake only if required information is still missing.
+
+SAFETY RULE:
+Use the flag_safety_concern tool only for a clearly urgent or potentially
+dangerous symptom pattern.
+
+Examples include:
+- severe chest pain with shortness of breath, fainting, or sweating
+- signs of stroke
+- severe difficulty breathing
+- uncontrolled bleeding
+- loss of consciousness
+- suicidal intent or immediate danger
+- severe allergic reaction
+- severe or rapidly worsening abdominal pain with high-risk features
+
+Do not flag an ordinary symptom solely because it is described as sharp,
+painful, or related to food.
+
+Do not tell the patient repeatedly that a concern was flagged. Continue the
+intake unless immediate escalation makes continuation inappropriate.
+
+FINAL OUTPUT:
+When intake is complete, respond with exactly this format:
+
+<INTAKE_COMPLETE>
+{
+  "chiefComplaint": "string",
+  "hpi": "string",
+  "medications": [
+    {
+      "name": "string",
+      "dose": "string",
+      "frequency": "string"
+    }
+  ],
+  "allergies": [
+    {
+      "substance": "string",
+      "reaction": "string",
+      "severity": "LOW"
+    }
+  ],
+  "pmhx": ["string"],
+  "redFlags": ["string"],
+  "confidence": {
+    "medications": "HIGH",
+    "allergies": "HIGH"
+  },
+  "uncertain": []
+}
+</INTAKE_COMPLETE>
+
+OUTPUT REQUIREMENTS:
+- Do not use markdown code fences.
+- Do not include text before <INTAKE_COMPLETE>.
+- Do not include text after </INTAKE_COMPLETE>.
+- Produce valid JSON.
+- Use only these allergy severity values:
+  LOW, MEDIUM, HIGH, UNKNOWN
+- Use only these confidence values:
+  HIGH, MEDIUM, LOW
+- If there are no medications, use [].
+- If there are no allergies, use [].
+- If there is no relevant medical history, use [].
+- If there are no red flags, use [].
+- Never include placeholder values such as "...".
 `.trim()
 
-// ─────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // TOOL DEFINITIONS
-// One tool: flag_safety_concern. This keeps the agentic loop simple and
-// demonstrable — the point is showing the mechanism, not building a large
-// tool surface.
-// ─────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+
 const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
       name: 'flag_safety_concern',
       description:
-        'Flag a patient statement as a potential safety concern requiring ' +
-        'attention before or independent of the scheduled appointment. Call ' +
-        'this immediately when the patient discloses something suggesting an ' +
-        'emergency or urgent risk.',
+        'Record a clearly urgent or potentially dangerous patient safety concern for clinician review.',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
           concern: {
             type: 'string',
-            description: 'Brief description of the concern'
+            description: 'A concise description of the safety concern.'
           },
           severity: {
             type: 'string',
@@ -120,52 +155,194 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   }
 ]
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface SafetyFlag {
   concern: string
   severity: 'URGENT' | 'HIGH' | 'MEDIUM'
 }
 
-interface AgentTurnResult {
+export interface AgentTurnResult {
   assistantMessage: string
   isComplete: boolean
   summary: ClinicalSummary | null
   safetyFlags: SafetyFlag[]
 }
 
-function executeTool(name: string, input: Record<string, unknown>): { result: string; flag?: SafetyFlag } {
-  if (name === 'flag_safety_concern') {
-    const flag: SafetyFlag = {
-      concern: String(input.concern ?? 'unspecified'),
-      severity: (input.severity as SafetyFlag['severity']) ?? 'MEDIUM'
+// ─────────────────────────────────────────────────────────────────────────────
+// TOOL EXECUTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+function executeTool(
+  name: string,
+  input: Record<string, unknown>
+): {
+  result: string
+  flag?: SafetyFlag
+} {
+  if (name !== 'flag_safety_concern') {
+    return {
+      result: 'Unknown tool.'
     }
-    // In a real system this would page a clinician or trigger an alert.
-    // Here, executing the tool just acknowledges it back to the model so
-    // the conversation can continue, and we surface the flag to the caller.
-    return { result: 'Safety concern logged and will be reviewed by clinical staff.', flag }
   }
-  return { result: 'Unknown tool' }
+
+  const rawSeverity = String(input.severity ?? 'MEDIUM')
+
+  const severity: SafetyFlag['severity'] =
+    rawSeverity === 'URGENT' ||
+    rawSeverity === 'HIGH' ||
+    rawSeverity === 'MEDIUM'
+      ? rawSeverity
+      : 'MEDIUM'
+
+  const flag: SafetyFlag = {
+    concern: String(input.concern ?? 'Unspecified safety concern'),
+    severity
+  }
+
+  return {
+    result:
+      'The safety concern was recorded for clinical review. Continue collecting any remaining required intake information without repeating the warning.',
+    flag
+  }
 }
 
-/**
- * Runs one full agentic turn: sends the conversation history to Claude,
- * executes any tool calls in a loop until the model stops using tools,
- * and parses a structured summary if intake is complete.
- */
-export async function runIntakeTurn(history: Message[]): Promise<AgentTurnResult> {
-  const safetyFlags: SafetyFlag[] = []
+// ─────────────────────────────────────────────────────────────────────────────
+// SUMMARY PARSING
+// ─────────────────────────────────────────────────────────────────────────────
 
-  let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
-  history.map((m) => ({
-    role: m.role === 'patient' ? 'user' : 'assistant',
-    content: m.content
-  }))
+function extractCompletionJson(rawText: string): string | null {
+  const match = rawText.match(
+    /<INTAKE_COMPLETE>\s*([\s\S]*?)\s*<\/INTAKE_COMPLETE>/i
+  )
 
-  let response = await openrouter.chat.completions.create({
+  if (!match?.[1]) {
+    return null
+  }
+
+  return match[1]
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim()
+}
+
+function isConfidenceValue(
+  value: unknown
+): value is 'HIGH' | 'MEDIUM' | 'LOW' {
+  return value === 'HIGH' || value === 'MEDIUM' || value === 'LOW'
+}
+
+function isAllergySeverity(
+  value: unknown
+): value is 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN' {
+  return (
+    value === 'LOW' ||
+    value === 'MEDIUM' ||
+    value === 'HIGH' ||
+    value === 'UNKNOWN'
+  )
+}
+
+function normalizeClinicalSummary(value: unknown): ClinicalSummary {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Summary is not an object')
+  }
+
+  const input = value as Record<string, unknown>
+
+  const medications = Array.isArray(input.medications)
+    ? input.medications.map((item) => {
+        const medication =
+          item && typeof item === 'object'
+            ? (item as Record<string, unknown>)
+            : {}
+
+        return {
+          name: String(medication.name ?? '').trim(),
+          dose: String(medication.dose ?? '').trim(),
+          frequency: String(medication.frequency ?? '').trim()
+        }
+      })
+    : []
+
+  const allergies = Array.isArray(input.allergies)
+    ? input.allergies.map((item) => {
+        const allergy =
+          item && typeof item === 'object'
+            ? (item as Record<string, unknown>)
+            : {}
+
+        const rawSeverity = allergy.severity
+
+        return {
+          substance: String(allergy.substance ?? '').trim(),
+          reaction: String(allergy.reaction ?? '').trim(),
+          severity: isAllergySeverity(rawSeverity)
+            ? rawSeverity
+            : 'UNKNOWN'
+        }
+      })
+    : []
+
+  const confidenceInput =
+    input.confidence && typeof input.confidence === 'object'
+      ? (input.confidence as Record<string, unknown>)
+      : {}
+
+  const medicationsConfidence = confidenceInput.medications
+  const allergiesConfidence = confidenceInput.allergies
+
+  const summary: ClinicalSummary = {
+    chiefComplaint: String(input.chiefComplaint ?? '').trim(),
+    hpi: String(input.hpi ?? '').trim(),
+    medications,
+    allergies,
+    pmhx: Array.isArray(input.pmhx)
+      ? input.pmhx.map((item) => String(item))
+      : [],
+    redFlags: Array.isArray(input.redFlags)
+      ? input.redFlags.map((item) => String(item))
+      : [],
+    confidence: {
+      medications: isConfidenceValue(medicationsConfidence)
+        ? medicationsConfidence
+        : 'LOW',
+      allergies: isConfidenceValue(allergiesConfidence)
+        ? allergiesConfidence
+        : 'LOW'
+    },
+    uncertain: Array.isArray(input.uncertain)
+      ? input.uncertain.map((item) => String(item))
+      : []
+  }
+
+  if (!summary.chiefComplaint) {
+    throw new Error('Summary is missing chiefComplaint')
+  }
+
+  if (!summary.hpi) {
+    throw new Error('Summary is missing hpi')
+  }
+
+  return summary
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MODEL REQUEST
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function createCompletion(
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]
+) {
+  return openrouter.chat.completions.create({
     model: 'openai/gpt-4o',
-    max_tokens: 1024,
     temperature: 0,
+    max_tokens: 1400,
     tools,
+    tool_choice: 'auto',
     messages: [
       {
         role: 'system',
@@ -174,84 +351,131 @@ export async function runIntakeTurn(history: Message[]): Promise<AgentTurnResult
       ...messages
     ]
   })
+}
 
-  // Agentic loop — keep executing tool calls until the model produces a
-  // final text response with no further tool use.
-  while (response.choices[0]?.message?.tool_calls?.length) {
-    const assistantMessage = response.choices[0].message
-    const toolCalls = assistantMessage.tool_calls ?? []
-  
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN AGENT TURN
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function runIntakeTurn(
+  history: Message[]
+): Promise<AgentTurnResult> {
+  const safetyFlags: SafetyFlag[] = []
+
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
+    history.map((message) => ({
+      role: message.role === 'patient' ? 'user' : 'assistant',
+      content: message.content
+    }))
+
+  let response = await createCompletion(messages)
+
+  let loopCount = 0
+  const maximumToolLoops = 5
+
+  while (
+    response.choices[0]?.message?.tool_calls?.length &&
+    loopCount < maximumToolLoops
+  ) {
+    loopCount += 1
+
+    const modelMessage = response.choices[0].message
+    const toolCalls = modelMessage.tool_calls ?? []
+
     messages.push({
       role: 'assistant',
-      content: assistantMessage.content,
+      content: modelMessage.content,
       tool_calls: toolCalls
     })
-  
+
     for (const toolCall of toolCalls) {
       if (toolCall.type !== 'function') {
         continue
       }
-  
+
       let input: Record<string, unknown> = {}
-  
+
       try {
         input = JSON.parse(toolCall.function.arguments) as Record<
           string,
           unknown
         >
       } catch {
-        input = {}
+        console.warn('[intake-agent] Invalid tool arguments', {
+          toolName: toolCall.function.name
+        })
       }
-  
-      const { result, flag } = executeTool(
+
+      const toolResult = executeTool(
         toolCall.function.name,
         input
       )
-  
-      if (flag) {
-        safetyFlags.push(flag)
+
+      if (toolResult.flag) {
+        safetyFlags.push(toolResult.flag)
       }
-  
+
       messages.push({
         role: 'tool',
         tool_call_id: toolCall.id,
-        content: result
+        content: toolResult.result
       })
     }
-  
-    response = await openrouter.chat.completions.create({
-      model: 'openai/gpt-4o',
-      max_tokens: 1024,
-      temperature: 0,
-      tools,
-      messages: [
-        {
-          role: 'system',
-          content: INTAKE_SYSTEM_PROMPT
-        },
-        ...messages
-      ]
-    })
+
+    response = await createCompletion(messages)
   }
 
   const rawText =
-  response.choices[0]?.message?.content ?? ''
+    response.choices[0]?.message?.content?.trim() ?? ''
 
-  console.log('Model response:', rawText.substring(0, 200))  // ← ADD THIS
-  
-  if (rawText.includes('<INTAKE_COMPLETE>')) {
-    console.log('Intake marked complete!')  // ← AND THIS
-    const jsonPart = rawText.split('<INTAKE_COMPLETE>')[1]?.trim() ?? ''
-    console.log('JSON part:', jsonPart)  // ← AND THIS
-    try {
-      const clean = jsonPart.replace(/```json\n?|\n?```/g, '').trim()
-      const summary = JSON.parse(clean) as ClinicalSummary
-      return { assistantMessage: rawText, isComplete: true, summary, safetyFlags }
-    } catch (e) {
-      console.error('JSON parse failed:', e)  // ← AND THIS
-      return { assistantMessage: rawText, isComplete: false, summary: null, safetyFlags }
+  const completionJson = extractCompletionJson(rawText)
+
+  if (!completionJson) {
+    return {
+      assistantMessage:
+        rawText ||
+        'Could you provide a little more information about your current concern?',
+      isComplete: false,
+      summary: null,
+      safetyFlags
     }
   }
 
-  return { assistantMessage: rawText, isComplete: false, summary: null, safetyFlags }
+  try {
+    const parsedValue: unknown = JSON.parse(completionJson)
+    const summary = normalizeClinicalSummary(parsedValue)
+
+    const combinedRedFlags = [
+      ...summary.redFlags,
+      ...safetyFlags.map(
+        (flag) => `${flag.severity}: ${flag.concern}`
+      )
+    ]
+
+    summary.redFlags = Array.from(new Set(combinedRedFlags))
+
+    return {
+      assistantMessage:
+        'Thank you. Your intake is complete and ready for clinician review.',
+      isComplete: true,
+      summary,
+      safetyFlags
+    }
+  } catch (error) {
+    console.error('[intake-agent] Failed to parse completion summary', {
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Unknown parsing error',
+      rawText
+    })
+
+    return {
+      assistantMessage:
+        'I need one more moment to complete your intake. Could you briefly restate your main concern?',
+      isComplete: false,
+      summary: null,
+      safetyFlags
+    }
+  }
 }
