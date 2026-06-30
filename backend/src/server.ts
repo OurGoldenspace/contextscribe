@@ -105,7 +105,7 @@ let server: ReturnType<typeof app.listen> | undefined
 async function start(): Promise<void> {
   await connectDB()
 
-  server = app.listen(PORT, () => {
+  server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[server] listening on port ${PORT}`)
   })
 }
