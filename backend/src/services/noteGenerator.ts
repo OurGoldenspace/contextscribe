@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { openrouter } from '../config/openrouter'
 import type { ClinicalSummary, SOAPNote } from '../types'
 import {
   parseModelJSON,
@@ -7,9 +7,7 @@ import {
   LLMOutputError
 } from './validation'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-const MODEL = 'claude-sonnet-4-6'
 
 // ─────────────────────────────────────────────────────────────────────────
 // This is the file that proves the thesis. One prompt template, one
@@ -97,29 +95,46 @@ export async function generateSOAPNote(
   const systemPrompt = buildSystemPrompt(hasContext)
 
   const userContent = hasContext
-    ? `PRE-VISIT INTAKE SUMMARY (verified ground truth):\n${JSON.stringify(intakeContext, null, 2)}\n\nVISIT TRANSCRIPT:\n${transcript}`
-    : `VISIT TRANSCRIPT (no pre-visit intake available):\n${transcript}`
+    ? `PRE-VISIT INTAKE SUMMARY (verified ground truth):
+${JSON.stringify(intakeContext, null, 2)}
 
-  const response = await anthropic.messages.create({
-    model: MODEL,
+VISIT TRANSCRIPT:
+${transcript}`
+    : `VISIT TRANSCRIPT (no pre-visit intake available):
+${transcript}`
+
+  const response = await openrouter.chat.completions.create({
+    model: 'openai/gpt-4o',
     max_tokens: 2048,
-    system: systemPrompt,
-    messages: [{ role: 'user', content: userContent }]
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content: systemPrompt
+      },
+      {
+        role: 'user',
+        content: userContent
+      }
+    ]
   })
 
-  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text')
-  if (!textBlock) {
-    throw new LLMOutputError('Model returned no text content', { response })
+  const textContent = response.choices[0]?.message?.content
+
+  if (!textContent) {
+    throw new LLMOutputError('Model returned no text content', {
+      response
+    })
   }
 
-  const parsed = parseModelJSON(textBlock.text)
+  const parsed = parseModelJSON(textContent)
   const note = validateSOAPNote(parsed)
 
-  // Cross-reference validation: does every medication/allergy the model
-  // named actually appear in the source material? This is what catches
-  // the specific failure mode the no-context path is expected to exhibit.
-  const sourceText = hasContext ? transcript : transcript
-  const crossRef = crossReferenceSOAPNote(note, sourceText, intakeContext)
+  const crossRef = crossReferenceSOAPNote(
+    note,
+    transcript,
+    intakeContext
+  )
 
   return {
     note,
@@ -134,21 +149,17 @@ export interface ComparisonResult {
   withoutContext: NoteGenerationResult
 }
 
-/**
- * The headline demo function: runs the SAME transcript through the SAME
- * model with and without upstream intake context, and returns both
- * results side by side. This is what you run live (or describe) in the
- * interview to demonstrate FirstHx's core architectural thesis with your
- * own code rather than reciting it back to them.
- */
 export async function runComparison(
   transcript: string,
   intakeContext: ClinicalSummary
 ): Promise<ComparisonResult> {
   const [withContext, withoutContext] = await Promise.all([
     generateSOAPNote(transcript, intakeContext),
-    generateSOAPNote(transcript, undefined)
+    generateSOAPNote(transcript)
   ])
 
-  return { withContext, withoutContext }
+  return {
+    withContext,
+    withoutContext
+  }
 }

@@ -1,9 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk'
+import OpenAI from 'openai'
+import { openrouter } from '../config/openrouter'
 import type { Message, ClinicalSummary } from '../types'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-const MODEL = 'claude-sonnet-4-6'
+
 
 // ─────────────────────────────────────────────────────────────────────────
 // SYSTEM PROMPT
@@ -41,6 +41,15 @@ CONSTRAINTS:
   Continue the intake after flagging unless the concern makes continuing
   inappropriate.
 - Aim to complete intake in 8-14 exchanges. Do not pad the conversation.
+- Ask only one question at a time.
+- Adapt follow-ups based on what the patient said.
+- COMPLETION: Mark intake complete once you have gathered:
+  1. Chief complaint (what brings them in)
+  2. Duration/onset of the problem
+  3. Current medications (even if none)
+  4. Known allergies (even if none)
+  5. Any relevant past medical history
+  Do NOT pad with extra questions once you have this core data.
 
 OUTPUT FORMAT (only once intake is complete):
 When you have gathered sufficient information (chief complaint, history of
@@ -63,6 +72,24 @@ FAILURE BEHAVIOUR:
 - If a field cannot be determined with confidence, leave the array empty or
   the string minimal, and list the field name in "uncertain". Never guess.
 - Uncertain data is better than fabricated data.
+
+COMPLETION RULE:
+- As soon as chief complaint, HPI, medications, allergies, and relevant
+  past medical history have all been collected, immediately complete the
+  intake.
+- Do not ask the patient to confirm your summary.
+- Do not ask a generic final question.
+- Return <INTAKE_COMPLETE> followed by the JSON object.
+
+SAFETY TOOL RULE:
+- When an urgent concern is present, calling flag_safety_concern is
+  mandatory.
+- Do not merely warn the patient in text.
+- Call the tool before asking the next question.
+- After the tool result is returned, provide a brief urgent-care message
+  and continue only when appropriate.
+
+
 `.trim()
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -71,24 +98,35 @@ FAILURE BEHAVIOUR:
 // demonstrable — the point is showing the mechanism, not building a large
 // tool surface.
 // ─────────────────────────────────────────────────────────────────────────
-const tools: Anthropic.Tool[] = [
+const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
-    name: 'flag_safety_concern',
-    description:
-      'Flag a patient statement as a potential safety concern requiring ' +
-      'attention before or independent of the scheduled appointment. Call ' +
-      'this immediately when the patient discloses something suggesting an ' +
-      'emergency or urgent risk.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        concern: { type: 'string', description: 'Brief description of the concern' },
-        severity: { type: 'string', enum: ['URGENT', 'HIGH', 'MEDIUM'] }
-      },
-      required: ['concern', 'severity']
+    type: 'function',
+    function: {
+      name: 'flag_safety_concern',
+      description:
+        'Flag a patient statement as a potential safety concern requiring ' +
+        'attention before or independent of the scheduled appointment. Call ' +
+        'this immediately when the patient discloses something suggesting an ' +
+        'emergency or urgent risk.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          concern: {
+            type: 'string',
+            description: 'Brief description of the concern'
+          },
+          severity: {
+            type: 'string',
+            enum: ['URGENT', 'HIGH', 'MEDIUM']
+          }
+        },
+        required: ['concern', 'severity']
+      }
     }
   }
 ]
+
 
 export interface SafetyFlag {
   concern: string
@@ -124,66 +162,100 @@ function executeTool(name: string, input: Record<string, unknown>): { result: st
 export async function runIntakeTurn(history: Message[]): Promise<AgentTurnResult> {
   const safetyFlags: SafetyFlag[] = []
 
-  let messages: Anthropic.MessageParam[] = history.map((m) => ({
+  let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
+  history.map((m) => ({
     role: m.role === 'patient' ? 'user' : 'assistant',
     content: m.content
   }))
 
-  let response = await anthropic.messages.create({
-    model: MODEL,
+  let response = await openrouter.chat.completions.create({
+    model: 'openai/gpt-4o-mini',
     max_tokens: 1024,
-    system: INTAKE_SYSTEM_PROMPT,
+    temperature: 0,
     tools,
-    messages
+    messages: [
+      {
+        role: 'system',
+        content: INTAKE_SYSTEM_PROMPT
+      },
+      ...messages
+    ]
   })
 
   // Agentic loop — keep executing tool calls until the model produces a
   // final text response with no further tool use.
-  while (response.stop_reason === 'tool_use') {
-    const toolUseBlocks = response.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use'
-    )
-
-    const toolResults: Anthropic.ToolResultBlockParam[] = []
-
-    for (const block of toolUseBlocks) {
-      const { result, flag } = executeTool(block.name, block.input as Record<string, unknown>)
-      if (flag) safetyFlags.push(flag)
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: block.id,
+  while (response.choices[0]?.message?.tool_calls?.length) {
+    const assistantMessage = response.choices[0].message
+    const toolCalls = assistantMessage.tool_calls ?? []
+  
+    messages.push({
+      role: 'assistant',
+      content: assistantMessage.content,
+      tool_calls: toolCalls
+    })
+  
+    for (const toolCall of toolCalls) {
+      if (toolCall.type !== 'function') {
+        continue
+      }
+  
+      let input: Record<string, unknown> = {}
+  
+      try {
+        input = JSON.parse(toolCall.function.arguments) as Record<
+          string,
+          unknown
+        >
+      } catch {
+        input = {}
+      }
+  
+      const { result, flag } = executeTool(
+        toolCall.function.name,
+        input
+      )
+  
+      if (flag) {
+        safetyFlags.push(flag)
+      }
+  
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
         content: result
       })
     }
-
-    messages = [
-      ...messages,
-      { role: 'assistant', content: response.content },
-      { role: 'user', content: toolResults }
-    ]
-
-    response = await anthropic.messages.create({
-      model: MODEL,
+  
+    response = await openrouter.chat.completions.create({
+      model: 'openai/gpt-4o-mini',
       max_tokens: 1024,
-      system: INTAKE_SYSTEM_PROMPT,
+      temperature: 0,
       tools,
-      messages
+      messages: [
+        {
+          role: 'system',
+          content: INTAKE_SYSTEM_PROMPT
+        },
+        ...messages
+      ]
     })
   }
 
-  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text')
-  const rawText = textBlock?.text ?? ''
+  const rawText =
+  response.choices[0]?.message?.content ?? ''
 
+  console.log('Model response:', rawText.substring(0, 200))  // ← ADD THIS
+  
   if (rawText.includes('<INTAKE_COMPLETE>')) {
+    console.log('Intake marked complete!')  // ← AND THIS
     const jsonPart = rawText.split('<INTAKE_COMPLETE>')[1]?.trim() ?? ''
+    console.log('JSON part:', jsonPart)  // ← AND THIS
     try {
       const clean = jsonPart.replace(/```json\n?|\n?```/g, '').trim()
       const summary = JSON.parse(clean) as ClinicalSummary
       return { assistantMessage: rawText, isComplete: true, summary, safetyFlags }
-    } catch {
-      // Model claimed completion but didn't produce valid JSON — treat as
-      // not complete rather than crashing. The caller decides how to
-      // surface this (in this demo: returned as an error state upstream).
+    } catch (e) {
+      console.error('JSON parse failed:', e)  // ← AND THIS
       return { assistantMessage: rawText, isComplete: false, summary: null, safetyFlags }
     }
   }

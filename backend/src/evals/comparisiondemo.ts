@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { runComparison } from './backend/src/services/noteGenerator'
+import { runComparison } from '../services/noteGenerator'
 
 // ─────────────────────────────────────────────────────────────────────────
 // Run with: npm run demo:comparison

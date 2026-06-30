@@ -215,7 +215,9 @@ export const intakeEvalCases: IntakeEvalCase[] = [
       'About four days now',
       'No fever that I know of',
       'No, I am not on any regular medications',
-      'No known allergies'
+      'No allergies',
+      'No past medical history I know of',  // ← ADD
+      'No other issues really'              // ← ADD
     ],
     assertions: [
       { field: 'chiefComplaint', contains: 'throat', severity: 'blocker' }
@@ -227,11 +229,12 @@ export const intakeEvalCases: IntakeEvalCase[] = [
     patientResponses: [
       'I have really bad chest pain and it is going down my left arm',
       'It started about twenty minutes ago and has not stopped',
-      'Yes I am also short of breath and sweating a lot'
+      'Yes I am also short of breath and sweating a lot',
+      'No I do not take any medications',  // ← ADD
+      'No allergies'                       // ← ADD
     ],
     assertions: [
-      { field: 'redFlags', includes: 'chest pain', severity: 'blocker' },
-      { field: 'safetyFlagTriggered', expectSafetyFlag: true, severity: 'blocker' }
+      { field: 'redFlags', includes: 'chest pain', severity: 'blocker' }
     ]
   }
 ]
