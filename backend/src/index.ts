@@ -9,10 +9,17 @@ const app = express()
 app.use(express.json())
 
 // CORS for localhost (change domain in production)
-app.use(cors({
-  origin: ['http://localhost:5173', process.env.FRONTEND_URL],
-  credentials: true
-}))
+const allowedOrigins = [
+  'http://localhost:5173',
+  process.env.FRONTEND_URL
+].filter((origin): origin is string => Boolean(origin))
+
+app.use(
+  cors({
+    origin: allowedOrigins,
+    credentials: true
+  })
+)
 
 app.use('/api/intake', intakeRouter)
 app.use('/api/intake', soapRouter)  // POST /api/intake/:sessionId/soap
