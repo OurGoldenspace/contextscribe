@@ -1,3 +1,4 @@
+import { env } from '../../env'
 import {
     useEffect,
     useRef,
@@ -70,7 +71,9 @@ import {
   
   type ApiResponse<T> = ApiSuccess<T> | ApiFailure
   
-  const API_BASE_URL = 'http://localhost:4000'
+  const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ??
+  'http://localhost:4000'
   
   function formatList(values: string[]): string {
     return values.length > 0 ? values.join(', ') : 'None reported'
