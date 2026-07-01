@@ -12,6 +12,7 @@ import { connectDB } from './db'
 import { intakeRouter } from './routes/intake'
 import { noteRouter } from './routes/note'
 import { soapRouter } from './routes/soap'
+import { errorHandler } from './middleware/errorHandler'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 4000
@@ -167,3 +168,4 @@ start().catch((error) => {
 
 
 
+app.use(errorHandler)

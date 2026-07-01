@@ -14,7 +14,10 @@ import type {
   Message
 } from '../types'
 
+import { IntakeService } from '../services/intakeService'
+
 export const intakeRouter = Router()
+const intakeService = new IntakeService()
 
 const SendMessageSchema = z.object({
   message: z.string().trim().min(1).max(2000)
@@ -39,57 +42,22 @@ function serializeMessages(
 // Creates a new intake session and asks the first question.
 // ─────────────────────────────────────────────────────────────────────────────
 
-intakeRouter.post(
-  '/start',
-  async (_req: Request, res: Response): Promise<void> => {
-    const sessionId = uuidv4()
-    const requestId = uuidv4()
+intakeRouter.post('/start', async (req, res, next) => {
+  try {
+    const { sessionId, firstQuestion } = await intakeService.startSession()
 
-    try {
-      const result = await runIntakeTurn([])
-      const now = new Date()
-
-      const session = await IntakeSession.create({
+    res.status(201).json({
+      ok: true,
+      data: {
         sessionId,
-        messages: [
-          {
-            role: 'assistant',
-            content: result.assistantMessage,
-            timestamp: now
-          }
-        ],
+        messages: [{ role: 'assistant', content: firstQuestion }],
         status: 'active'
-      })
-
-      const response: ApiResponse<IntakeSessionState> = {
-        ok: true,
-        data: {
-          status: 'active',
-          sessionId,
-          messages: serializeMessages(session.messages)
-        },
-        requestId
       }
-
-      res.status(201).json(response)
-    } catch (error) {
-      console.error('[intake/start] failed', {
-        requestId,
-        error
-      })
-
-      const response: ApiResponse<never> = {
-        ok: false,
-        error: 'Failed to start intake session',
-        code: 'INTAKE_START_FAILED',
-        retryable: true,
-        requestId
-      }
-
-      res.status(500).json(response)
-    }
+    })
+  } catch (err) {
+    next(err)
   }
-)
+})
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/intake/:sessionId/message
