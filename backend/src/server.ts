@@ -13,6 +13,15 @@ import { intakeRouter } from './routes/intake'
 import { noteRouter } from './routes/note'
 import { soapRouter } from './routes/soap'
 import { errorHandler } from './middleware/errorHandler'
+import { rateLimit } from './middleware/rateLimit'
+import helmet from 'helmet'
+import { requireApiKey } from './middleware/auth'
+import swaggerUi from 'swagger-ui-express'
+import { swaggerSpec } from './config/swagger'
+
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
+
+app.use(helmet())  
 
 const app = express()
 const PORT = Number(process.env.PORT) || 4000

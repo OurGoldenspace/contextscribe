@@ -1,6 +1,17 @@
 {
   "dependencies": {
+    "helmet": "^8.2.0",
+    "js-tiktoken": "^1.0.21",
     "mongodb": "^7.4.0",
-    "openai": "^6.45.0"
+    "openai": "^6.45.0",
+    "swagger-jsdoc": "^6.3.0",
+    "swagger-ui-express": "^5.0.1",
+    "xss": "^1.0.15"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.11"
   }
 }
