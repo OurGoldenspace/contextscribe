@@ -42,35 +42,6 @@ const GenerateSOAPSchema = z.object({
   transcript: z.string().optional()
 })
 
-// Helper: Convert any value (nested object, array, string) to flat string
-function stringifyField(value: any): string {
-  if (!value) return ''
-  
-  if (typeof value === 'string') return value
-  
-  if (typeof value === 'object') {
-    if (Array.isArray(value)) {
-      return value
-        .map(v => stringifyField(v))
-        .filter(s => s.length > 0)
-        .join('\n')
-    }
-    
-    // Object with nested keys (e.g., { chiefComplaint: "...", hpi: "..." })
-    return Object.entries(value)
-      .map(([key, val]) => {
-        const label = key.replace(/([A-Z])/g, ' $1').trim()
-        const capitalLabel = label.charAt(0).toUpperCase() + label.slice(1)
-        const stringVal = stringifyField(val)
-        return stringVal ? `${capitalLabel}: ${stringVal}` : ''
-      })
-      .filter(s => s.length > 0)
-      .join('\n')
-  }
-  
-  return String(value)
-}
-
 soapRouter.post(
   '/:sessionId/soap',
   async (req: Request, res: Response): Promise<void> => {
@@ -106,6 +77,7 @@ soapRouter.post(
 
     try {
       const { transcript } = parsed.data
+
       const summary: ClinicalSummary = parsed.data.summary
 
       const medicationText =
@@ -161,8 +133,6 @@ Patient: ${medicalHistoryText}.
 Doctor: Thank you. I will review this information and continue with the assessment.
         `.trim()
 
-      console.log('[soap/generating]', { sessionId, transcriptLength: visitTranscript.length })
-
       const result = await generateSOAPNote(
         visitTranscript,
         summary
@@ -184,37 +154,13 @@ Doctor: Thank you. I will review this information and continue with the assessme
             ]
           : []
 
-      // ⚠️ CRITICAL: Flatten the note structure for frontend compatibility
-      // The AI may return nested objects, but frontend expects flat strings
-      const flattenedNote = {
-        subjective: stringifyField(result.note.subjective || 'Not documented'),
-        objective: stringifyField(result.note.objective || 'Not documented'),
-        assessment: stringifyField(result.note.assessment || 'Not documented'),
-        plan: stringifyField(result.note.plan || 'Not documented')
-      }
-
-      console.log('[soap/generated]', {
-        sessionId,
-        noteStructure: {
-          subjectiveLength: flattenedNote.subjective.length,
-          objectiveLength: flattenedNote.objective.length,
-          assessmentLength: flattenedNote.assessment.length,
-          planLength: flattenedNote.plan.length
-        }
-      })
-
       const response: ApiResponse<{
-        note: {
-          subjective: string
-          objective: string
-          assessment: string
-          plan: string
-        }
+        note: typeof result.note
         warnings: string[]
       }> = {
         ok: true,
         data: {
-          note: flattenedNote,
+          note: result.note,
           warnings
         },
         requestId: uuidv4()
@@ -222,10 +168,9 @@ Doctor: Thank you. I will review this information and continue with the assessme
 
       res.status(200).json(response)
     } catch (error) {
-      console.error('[soap/error]', {
+      console.error('[intake/soap] failed', {
         sessionId,
-        error: error instanceof Error ? error.message : 'unknown',
-        stack: error instanceof Error ? error.stack : undefined
+        error
       })
 
       const response: ApiResponse<never> = {
