@@ -156,7 +156,7 @@ export default function IntakeChat() {
 
     try {
       const response = await fetch(
-        `${API_BASE_URL}/api/intake/start`,
+        `${API_BASE_URL}/intake/start`,
         {
           method: 'POST',
           headers: {
@@ -232,7 +232,7 @@ export default function IntakeChat() {
 
     try {
       const response = await fetch(
-        `${API_BASE_URL}/api/intake/${sessionId}/message`,
+        `${API_BASE_URL}/intake/${sessionId}/message`,
         {
           method: 'POST',
           headers: {
@@ -303,7 +303,7 @@ export default function IntakeChat() {
 
     try {
       const response = await fetch(
-        `${API_BASE_URL}/api/intake/${sessionId}/soap`,
+        `${API_BASE_URL}/intake/${sessionId}/soap`,
         {
           method: 'POST',
           headers: {

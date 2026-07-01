@@ -37,7 +37,7 @@ export default function SOAPNoteView() {
   const generateSOAP = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`/api/intake/${sessionId}/soap`, {
+      const res = await fetch(`/intake/${sessionId}/soap`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ summary })
