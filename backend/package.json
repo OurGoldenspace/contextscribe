@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test:evals": "ts-node src/evals/runner.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:clinical": "ts-node src/evals/clinicalEvals.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
