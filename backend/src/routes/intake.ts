@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express'
+import { Router, type Request, type Response, type NextFunction } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { z } from 'zod'
 
@@ -14,10 +14,7 @@ import type {
   Message
 } from '../types'
 
-import { IntakeService } from '../services/intakeService'
-
 export const intakeRouter = Router()
-const intakeService = new IntakeService()
 
 const SendMessageSchema = z.object({
   message: z.string().trim().min(1).max(2000)
@@ -42,22 +39,44 @@ function serializeMessages(
 // Creates a new intake session and asks the first question.
 // ─────────────────────────────────────────────────────────────────────────────
 
-intakeRouter.post('/start', async (req, res, next) => {
-  try {
-    const { sessionId, firstQuestion } = await intakeService.startSession()
+intakeRouter.post(
+  '/start',
+  async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const sessionId = uuidv4()
+    const requestId = uuidv4()
 
-    res.status(201).json({
-      ok: true,
-      data: {
+    try {
+      const result = await runIntakeTurn([])
+      const now = new Date()
+
+      const session = await IntakeSession.create({
         sessionId,
-        messages: [{ role: 'assistant', content: firstQuestion }],
+        messages: [
+          {
+            role: 'assistant',
+            content: result.assistantMessage,
+            timestamp: now
+          }
+        ],
         status: 'active'
+      })
+
+      const response: ApiResponse<IntakeSessionState> = {
+        ok: true,
+        data: {
+          status: 'active',
+          sessionId,
+          messages: serializeMessages(session.messages)
+        },
+        requestId
       }
-    })
-  } catch (err) {
-    next(err)
+
+      res.status(201).json(response)
+    } catch (error) {
+      next(error)
+    }
   }
-})
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/intake/:sessionId/message
@@ -68,7 +87,7 @@ intakeRouter.post('/start', async (req, res, next) => {
 
 intakeRouter.post(
   '/:sessionId/message',
-  async (req: Request, res: Response): Promise<void> => {
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const requestId = uuidv4()
     const sessionId = req.params.sessionId
 
@@ -202,12 +221,6 @@ intakeRouter.post(
 
       res.status(200).json(response)
     } catch (error) {
-      console.error('[intake/message] failed', {
-        sessionId,
-        requestId,
-        error
-      })
-
       if (error instanceof LLMOutputError) {
         const response: ApiResponse<never> = {
           ok: false,
@@ -221,15 +234,7 @@ intakeRouter.post(
         return
       }
 
-      const response: ApiResponse<never> = {
-        ok: false,
-        error: 'Failed to process intake message',
-        code: 'INTAKE_MESSAGE_FAILED',
-        retryable: true,
-        requestId
-      }
-
-      res.status(500).json(response)
+      next(error)
     }
   }
 )
@@ -241,7 +246,7 @@ intakeRouter.post(
 
 intakeRouter.get(
   '/:sessionId',
-  async (req: Request, res: Response): Promise<void> => {
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const requestId = uuidv4()
     const sessionId = req.params.sessionId
 
@@ -321,23 +326,7 @@ intakeRouter.get(
 
       res.status(200).json(response)
     } catch (error) {
-      console.error('[intake/get] failed', {
-        sessionId,
-        requestId,
-        error
-      })
-
-      const response: ApiResponse<never> = {
-        ok: false,
-        error: 'Failed to retrieve intake session',
-        code: 'INTAKE_FETCH_FAILED',
-        retryable: true,
-        requestId
-      }
-
-      res.status(500).json(response)
+      next(error)
     }
   }
 )
-    
-  

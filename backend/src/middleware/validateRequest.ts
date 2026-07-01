@@ -1,9 +1,9 @@
-import { Request, Response, NextFunction } from 'express'
+import { Request, NextFunction } from 'express'
 import { ZodSchema } from 'zod'
 import { ValidationError } from '../utils/errors'
 
 export function validateRequest(schema: ZodSchema) {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return (req: Request, _res: unknown, next: NextFunction) => {
     const parsed = schema.safeParse(req.body)
     
     if (!parsed.success) {

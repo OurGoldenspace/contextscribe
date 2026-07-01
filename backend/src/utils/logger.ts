@@ -21,7 +21,7 @@ class Logger {
   private formatMessage(
     level: LogLevel,
     message: string,
-    context?: Record<string, any>
+    context?: Record<string, unknown>
   ): string {
     const timestamp = new Date().toISOString()
     const contextStr = context
@@ -30,25 +30,25 @@ class Logger {
     return `[${timestamp}] [${level.toUpperCase()}] ${message}${contextStr}`
   }
 
-  debug(message: string, context?: Record<string, any>): void {
+  debug(message: string, context?: Record<string, unknown>): void {
     if (this.shouldLog('debug')) {
       console.log(this.formatMessage('debug', message, context))
     }
   }
 
-  info(message: string, context?: Record<string, any>): void {
+  info(message: string, context?: Record<string, unknown>): void {
     if (this.shouldLog('info')) {
       console.log(this.formatMessage('info', message, context))
     }
   }
 
-  warn(message: string, context?: Record<string, any>): void {
+  warn(message: string, context?: Record<string, unknown>): void {
     if (this.shouldLog('warn')) {
       console.warn(this.formatMessage('warn', message, context))
     }
   }
 
-  error(message: string, error?: Error, context?: Record<string, any>): void {
+  error(message: string, error?: Error, context?: Record<string, unknown>): void {
     if (this.shouldLog('error')) {
       const errorContext = {
         ...context,
@@ -60,4 +60,6 @@ class Logger {
   }
 }
 
-export const logger = new Logger(process.env.LOG_LEVEL as LogLevel || 'info')
+export const logger = new Logger(
+  (process.env.LOG_LEVEL as LogLevel) || 'info'
+)
