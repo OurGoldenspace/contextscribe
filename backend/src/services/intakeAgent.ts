@@ -2,7 +2,6 @@ import OpenAI from 'openai'
 
 import { openrouter } from '../config/openrouter'
 import type { ClinicalSummary, Message } from '../types'
-import { sanitizeInput } from '../utils/sanitize'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SYSTEM PROMPT

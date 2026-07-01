@@ -1,53 +1,54 @@
 import 'dotenv/config'
 
-import express, {
-  type NextFunction,
-  type Request,
-  type Response
-} from 'express'
+import express, { type NextFunction, type Request, type Response } from 'express'
 import cors from 'cors'
 import mongoose from 'mongoose'
 
+import { loadConfig } from './config/env'
 import { connectDB } from './db'
 import { intakeRouter } from './routes/intake'
 import { noteRouter } from './routes/note'
 import { soapRouter } from './routes/soap'
 import { errorHandler } from './middleware/errorHandler'
-import { rateLimit } from './middleware/rateLimit'
-import helmet from 'helmet'
-import { requireApiKey } from './middleware/auth'
-import swaggerUi from 'swagger-ui-express'
-import { swaggerSpec } from './config/swagger'
-
-app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
-
-app.use(helmet())  
+import { logger } from './utils/logger'
 
 const app = express()
-const PORT = Number(process.env.PORT) || 4000
+
+// Load configuration
+const config = loadConfig()
+const PORT = config.PORT
 
 const allowedOrigins = [
   'http://localhost:5173',
   'https://contextscribe.vercel.app',
-  'https://contextscribe-*.vercel.app',  // Match any vercel preview
-  process.env.FRONTEND_URL
+  config.FRONTEND_URL
 ].filter((origin): origin is string => Boolean(origin))
 
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // Allow all Vercel subdomains
-      if (!origin || origin.includes('vercel.app') || allowedOrigins.includes(origin)) {
-        callback(null, true)
-      } else {
-        callback(new Error('Not allowed by CORS'))
-      }
-    },
+    origin: allowedOrigins,
     credentials: true
   })
 )
 
 app.use(express.json({ limit: '1mb' }))
+
+// Request logging middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const start = Date.now()
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start
+    logger.info('HTTP request', {
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration: `${duration}ms`
+    })
+  })
+  
+  next()
+})
 
 // Liveness check: confirms that the Node process is running.
 app.get('/health/live', (_req: Request, res: Response) => {
@@ -76,15 +77,10 @@ app.get('/health/ready', (_req: Request, res: Response) => {
 
 // Application routes
 app.use('/api/intake', intakeRouter)
-
-// soapRouter defines POST /:sessionId/soap,
-// so the complete route becomes:
-// POST /api/intake/:sessionId/soap
 app.use('/api/intake', soapRouter)
-
 app.use('/api/note', noteRouter)
 
-// Handle routes that do not exist.
+// 404 handler
 app.use((_req: Request, res: Response) => {
   res.status(404).json({
     ok: false,
@@ -94,51 +90,34 @@ app.use((_req: Request, res: Response) => {
   })
 })
 
-// Global error handler.
-// Keep this after all routes and middleware.
-app.use(
-  (
-    err: Error,
-    req: Request,
-    res: Response,
-    _next: NextFunction
-  ) => {
-    console.error('[unhandled error]', {
-      path: req.path,
-      method: req.method,
-      error: err.message
-    })
-
-    res.status(500).json({
-      ok: false,
-      error: 'An unexpected error occurred',
-      code: 'INTERNAL_ERROR',
-      retryable: false
-    })
-  }
-)
+// Error handler (MUST be last)
+app.use(errorHandler)
 
 let server: ReturnType<typeof app.listen> | undefined
 
 async function start(): Promise<void> {
-  await connectDB()
+  try {
+    await connectDB()
+    logger.info('Database connected')
 
-  server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[server] listening on port ${PORT}`)
-  })
+    server = app.listen(PORT, '0.0.0.0', () => {
+      logger.info('Server listening', { port: PORT })
+    })
+  } catch (error) {
+    logger.error('Failed to start server', error instanceof Error ? error : undefined)
+    process.exit(1)
+  }
 }
 
 async function shutdown(signal: string): Promise<void> {
-  console.log(
-    `[server] ${signal} received — shutting down gracefully`
-  )
+  logger.info(`${signal} received — shutting down gracefully`)
 
   const closeDatabase = async (): Promise<void> => {
     try {
       await mongoose.connection.close()
-      console.log('[db] MongoDB connection closed')
+      logger.info('MongoDB connection closed')
     } catch (error) {
-      console.error('[db] failed to close MongoDB connection', error)
+      logger.error('Failed to close MongoDB connection', error instanceof Error ? error : undefined)
     }
   }
 
@@ -150,14 +129,14 @@ async function shutdown(signal: string): Promise<void> {
 
   server.close(async (error) => {
     if (error) {
-      console.error('[server] failed to close HTTP server', error)
+      logger.error('Failed to close HTTP server', error instanceof Error ? error : undefined)
       await closeDatabase()
       process.exit(1)
       return
     }
 
     await closeDatabase()
-    console.log('[server] shutdown complete')
+    logger.info('Shutdown complete')
     process.exit(0)
   })
 }
@@ -171,9 +150,6 @@ process.on('SIGINT', () => {
 })
 
 start().catch((error) => {
-  console.error('[server] failed to start', error)
+  logger.error('Failed to start server', error instanceof Error ? error : undefined)
   process.exit(1)
 })
-
-
-app.use(errorHandler)
